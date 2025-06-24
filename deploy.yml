@@ -1,0 +1,45 @@
+---
+- name: Deploy Laravel App inside Kubernetes Pod
+  hosts: localhost
+  vars:
+    pod_name: laravel-app-bcb997d85-8l2nq       # replace with your actual pod name
+    namespace: default                   # or your specific namespace
+    app_dir: /var/www
+    backup_path: /tmp/backup.sql
+    db_name: terrain_booking
+    db_user: root
+    db_pass: Hello@123               # ideally from Vault or vars
+  tasks:
+
+    - name: Ensure Git working tree is clean
+      shell: |
+        kubectl exec {{ pod_name }} -n {{ namespace }} -- bash -c "cd {{ app_dir }} && git diff --quiet && git pull"
+      register: git_pull_result
+      failed_when: git_pull_result.rc != 0
+      changed_when: false
+
+    - name: Run composer install
+      shell: |
+        kubectl exec {{ pod_name }} -n {{ namespace }} -- bash -c "cd {{ app_dir }} && composer install --no-interaction --prefer-dist --optimize-autoloader"
+    
+    - name: Run npm install and build
+      shell: |
+        kubectl exec {{ pod_name }} -n {{ namespace }} -- bash -c "cd {{ app_dir }} && npm install && npm run build"
+
+    - name: Ensure Laravel test DB is SQLite
+      shell: |
+        kubectl exec {{ pod_name }} -n {{ namespace }} -- bash -c "grep DB_CONNECTION=sqlite {{ app_dir }}/.env.testing"
+      register: test_db_check
+      failed_when: test_db_check.rc != 0
+      changed_when: false
+
+    - name: Run Laravel test suite (SQLite)
+      shell: |
+        kubectl exec {{ pod_name }} -n {{ namespace }} -- bash -c "cd {{ app_dir }} && php artisan test"
+      register: test_result
+      failed_when: test_result.rc != 0
+
+    - name: Backup MySQL production database
+      shell: |
+        kubectl exec {{ pod_name }} -n {{ namespace }} -- bash -c \
+        "mysqldump -u{{ db_user }} -p{{ db_pass }} {{ db_name }} > {{ backup_path }}"
